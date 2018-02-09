@@ -440,6 +440,7 @@ def emailCourseLogs(courseInstructors):
         emailLogForCourseID(courseID, recipients)
 
 
+
 def main():
     """Setup and run Canvas / ArcGIS group sync.
     
@@ -546,8 +547,13 @@ def main():
         logger.info('No valid Assignments linked to Outcome {} were found'.format(validOutcome))
         return
 
-    logger.info('Found Assignments linked to Outcome {}: {}'.format(validOutcome,
-                                                                    ', '.join(map(str, matchingCourseAssignments))))
+    # ERROR Handling: str can return an exception, trap it and continue so that logging message
+    # doesn't halt all remaining processing. 
+    try:
+        logger.info('Found Assignments linked to Outcome {}: {}'.format(validOutcome,
+                                                                        ', '.join(map(str, matchingCourseAssignments))))
+    except UnicodeError as exc:
+            logger.error("UnicodeError Exception printing outcomes and assignments: {}".format(exc))
 
     courseDictionary = getCoursesByID(canvas, matchingCourseIDs)
     courseUserDictionary = getCoursesUsersByID(canvas, matchingCourseIDs)
@@ -569,8 +575,8 @@ if __name__ == '__main__':
     kartStartTime = datetime.now()
     try:
         main()
-    except Exception as exp:
-        logger.error("abnormal ending: {}".format(exp))
+    except Exception as exp: # Normally don't trap general Exception, but this is in shutdown time so might was well know what happened.
+        logger.error("abnormal ending with exception: {}".format(exp))
         traceback.print_exc(exp)
     finally:
         logger.info("Stopping kartograafr.  Duration: {} seconds".format(datetime.now()-kartStartTime))

@@ -95,15 +95,17 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
     """Add new users to the ArcGIS group.  """
     groupNameAndID = util.formatNameAndID(group)
     
-    logger.info("addCanvasUsersToGroup: enter")
+    logger.debug("addCanvasUsersToGroup: entering: {}".format(group))
     
     if len(courseUsers) == 0:
         logger.info('No new users to add to ArcGIS Group {}'.format(groupNameAndID))
         return instructorLog
 
     logger.info('Adding Canvas Users to ArcGIS Group {}: {}'.format(groupNameAndID, courseUsers))
+    
     # ArcGIS usernames are U-M uniqnames with the ArcGIS organization name appended.
     arcGISFormatUsers = formatUsersNamesForArcGIS(courseUsers)
+   
     logger.debug("addCanvasUsersToGroup: formatted: {}".format(arcGISFormatUsers))
     
     results = group.add_users(arcGISFormatUsers)
@@ -114,9 +116,7 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
     usersCount = len(arcGISFormatUsers)
     usersCount -= len(usersNotAdded) if usersNotAdded else 0
     logger.debug("usersCount: {}".format(usersCount))
-    logger.debug("aCUTG: instructorLog 1: [{}]".format(instructorLog))
     instructorLog += 'Number of users added to group: [{}]\n\n'.format(usersCount)
-    logger.debug("aCUTG: instructorLog 2: [{}]".format(instructorLog))
     if usersNotAdded:
         logger.warning('Warning: Some or all users not added to ArcGIS group {}: {}'.format(groupNameAndID, usersNotAdded))
         instructorLog += 'Users not in group (these users need ArcGIS accounts created for them):\n' + '\n'.join(['* ' + userNotAdded for userNotAdded in usersNotAdded]) + '\n\n' + 'ArcGIS group ID number:\n{}\n\n'.format(group.id)
@@ -124,6 +124,8 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
     logger.debug("aCUTG: instructorLog 3: [{}]".format(instructorLog))
 
     logger.info("addCanvasUsersToGroup: instructorLog: [{}]".format(instructorLog))
+    logger.debug("addCanvasUsersToGroup: exit")
+    
     return instructorLog
 
 
