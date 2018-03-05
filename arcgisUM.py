@@ -1,4 +1,7 @@
-# Wrapper around calls to arcgis.  Helps with testing and future changes.
+# Wrapper around calls to ArcGIS.  Helps with testing and future changes.
+# This should also be usable in a Jupyter Notebook.  Some methods aren't used
+# by kartograafr as of this writing but are necessary for testing and might 
+# be useful for maintenance.
 
 import datetime
 import logging
@@ -31,6 +34,7 @@ options = None
 # TODO: required in this module?
 courseLogHandlers = dict()
 courseLoggers = dict()
+
 
 def getArcGISConnection(securityinfo):
     """
@@ -90,8 +94,6 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
     """Add new users to the ArcGIS group.  """
     groupNameAndID = util.formatNameAndID(group)
     
-    logger.info("addCanvasUsersToGroup: enter")
-    
     if len(courseUsers) == 0:
         logger.info('No new users to add to ArcGIS Group {}'.format(groupNameAndID))
         return instructorLog
@@ -108,7 +110,7 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
     """:type usersNotAdded: list"""
     usersCount = len(arcGISFormatUsers)
     usersCount -= len(usersNotAdded) if usersNotAdded else 0
-    logger.debug("usersCount: {}".format(usersCount))
+    logger.debug("aCUTG: usersCount: {}".format(usersCount))
     logger.debug("aCUTG: instructorLog 1: [{}]".format(instructorLog))
     instructorLog += 'Number of users added to group: [{}]\n\n'.format(usersCount)
     logger.debug("aCUTG: instructorLog 2: [{}]".format(instructorLog))
@@ -126,7 +128,8 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
 def createFolderForUser(arcGIS,folder_name,explicit_owner):
     '''create a named folder for a named user'''
 
-    logger.info("Create folder [{}] for user [{}].".format(folder_name,explicit_owner))
+    # TODO: handle "Folder already exists." output
+    logger.info("For user [{}] create folder [{}] .".format(explicit_owner,folder_name))
     
     try:
         folder_return = arcGIS.content.create_folder(folder=folder_name,owner=explicit_owner)
@@ -228,21 +231,120 @@ def getFoldersForUser(gis,user_name):
     return folders
 
 
+# def getItemsInFolderForUser(gis,folder_name,user_name):
+#     print("gis: {} user_name: [{}] folder_name: [{}]".format(gis,user_name,folder_name))
+#     user = gis.users.get(user_name)
+#     print('giiffu: user: {}'.format(user))
+#     folderItems = user.items(folder=folder_name)
+#     return folderItems
+
+def doesFolderMatchTitleAndIsEmpty(user,folder,folder_match):
+    '''Test if folder is empty and string matches the title as a prefix.'''
+    logger.debug("dFMFAIE: user: [{}] folder: [{}] folder_match: [{}]".format(user,folder,folder_match))
+    
+    if not folder_match.search(folder.get('title')):
+        return False
+                             
+    # If there are some items return false
+    folderItems = user.items(folder=folder)
+    logger.info("dFMTAIE: folder: [{}]folderItems: [{}]".format(folder,folderItems))
+    
+    if len(folderItems) > 0:
+        return False
+    
+    return True
+
+
+def doesFolderMatchTitle(user,folder,folder_match):
+    '''Test if folder is empty and string matches the title as a prefix.'''
+    logger.debug("dFMFAIE: user: [{}] folder: [{}] folder_match: [{}]".format(user,folder,folder_match))
+    
+    if not folder_match.search(folder.get('title')):
+        return False
+    
+    return True
+
+
+# It would be straightforward to extend this to pass in a predicate for matching.
 def deleteMatchingFoldersForUser(gis,user_name,match_string):
-    '''Check user's folders against string and delete if match.'''
+    '''Check user's folders against string and delete if match prefix of title and folder is empty.'''
     logger.debug("dMFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis,user_name,match_string))
+    
+    # assemble the values that won't change.
     folder_match = re.compile(match_string)
     user = gis.users.get(user_name)
     folders = user.folders
     logger.debug("dMFFU: all folders {}".format(folders))
  
-    matching_folders = [x for x in folders if folder_match.search(x.get('title'))]
+    matching_folders = [f for f in folders if doesFolderMatchTitleAndIsEmpty(user,f,folder_match)]
+    
     logger.info("deleting matching folders for user: {} folders: {}".format(user_name,matching_folders))
     
     for f in matching_folders:
         logger.info("deleting folder: [{}] for user: [{}]".format(f.get('title'),user_name))
         gis.content.delete_folder(f.get('title'), owner=user_name)
-        
-    # Returns nothing.  Assume errors are obvious.
+
+def listMatchingFoldersForUser(gis,user_name,match_string):
+    '''Find user's matching folders.'''
+    logger.debug("lMFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis,user_name,match_string))
+    
+    # assemble the values that won't change.
+    folder_match = re.compile(match_string)
+    user = gis.users.get(user_name)
+    folders = user.folders
+    logger.debug("lMFFU: all folders {}".format(folders))
+ 
+    matching_folders = [f for f in folders if doesFolderMatchTitle(user,f,folder_match)]
+    
+    logger.info("list matching folders for user: {} folders: {}".format(user_name,matching_folders))
+    
+def getItemsInFolderForUser(gis,folder_name,user_name):
+    logger.debug("gIIFFU: gis: {} user_name: [{}] folder_name: [{}]".format(gis,user_name,folder_name))
+    user = gis.users.get(user_name)
+    logger.debug('gIIFFU: user: {}'.format(user))
+    folderItems = user.items(folder=folder_name)
+    return folderItems
+    
+def createFolder(gis,folder_name,use_owner):
+    folder_return = gis.content.create_folder(folder=folder_name,owner=use_owner)
+    return folder_return
+    
+def cloneFolderFromTo(gis,source_folder_name,source_user_name,sink_folder_name,sink_user_name):
+    '''clone the items in the source folder to the sink folder and make sink user the owner.'''
+    logger.debug("cFFT: gis: {} source_folder_name: [{}] source_user_name: [{}] sink_folder_name: [{}] sink_user_name: [{}]"
+          .format(gis,source_folder_name,source_user_name,sink_folder_name,sink_user_name))
+    new_folder = createFolder(gis,sink_folder_name,sink_user_name)
+    logger.debug("cFFT: new_folder: {}".format(new_folder))
+
+    source_items = getItemsInFolderForUser(gis,source_folder_name,source_user_name)
+    logger.debug("cFFT: source_items: {}".format(source_items))
+    
+    logger.error("cFFT: skip actual clone for a bit")
+    #cloned = gis.content.clone_items(source_items,new_folder['title'],copy_data=True)
+    #print("cFFT: cloned: [{}]".format(cloned))
+    
+    return new_folder
+    
+    
+#     for f in matching_folders:
+#         logger.info("deleting folder: [{}] for user: [{}]".format(f.get('title'),user_name))
+
+
+# def deleteMatchingFoldersForUser(gis,user_name,match_string):
+#     '''Check user's folders against string and delete if match.'''
+#     logger.debug("dMFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis,user_name,match_string))
+#     folder_match = re.compile(match_string)
+#     user = gis.users.get(user_name)
+#     folders = user.folders
+#     logger.debug("dMFFU: all folders {}".format(folders))
+#  
+#     matching_folders = [x for x in folders if folder_match.search(x.get('title'))]
+#     logger.info("deleting matching folders for user: {} folders: {}".format(user_name,matching_folders))
+#     
+#     for f in matching_folders:
+#         logger.info("deleting folder: [{}] for user: [{}]".format(f.get('title'),user_name))
+#         gis.content.delete_folder(f.get('title'), owner=user_name)
+#         
+#     # Returns nothing.  Assume errors are obvious.
 
 ### end 

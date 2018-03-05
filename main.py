@@ -4,6 +4,13 @@
 import argparse
 from datetime import datetime
 import logging
+from _pytest.outcomes import skip
+from libpasteurize.fixes.fix_unpacking import assignment_source
+
+# convenience function to set logger level for named (sub) module.
+def setLoggerLevel(logging,logger_name,logger_level):
+    this_logger = logging.getLogger(logger_name)
+    this_logger.setLevel(logger_level)
 
 logger = logging.getLogger(__name__)
 loggingLevel = None
@@ -24,8 +31,8 @@ import config
 
 from CanvasAPI import CanvasAPI
 
-# The secrets module really is used during import (to change sensitive
-# properties). 
+# In spite of the lint message the secrets module really is used during import 
+# (to change sensitive properties). 
 import secrets #@UnusedImport
 
 import util
@@ -42,6 +49,10 @@ TIMEZONE_UTC = dateutil.tz.tzutc()
 RUN_START_TIME = datetime.now(tz=TIMEZONE_UTC)
 RUN_START_TIME_FORMATTED = RUN_START_TIME.strftime('%Y%m%d%H%M%S')
 
+COURSE_DICTIONARY = 'courseDictionary'
+COURSE_INSTRUCTOR_DICTIONARY = 'courseInstructorDictionary'
+COURSE_USER_DICTIONARY = 'courseUserDictionary'
+
 # Hold parsed options
 options = None
 
@@ -56,10 +67,14 @@ logFormatter = None  # type: logging.Formatter
 courseLogHandlers = dict()
 courseLoggers = dict()
 
+### Set logging level for particular modules.
+### These turn off most logging for these libraries.
+setLoggerLevel(logging,'urllib3',logging.INFO)
+setLoggerLevel(logging,'arcgis._impl',logging.INFO)
+
 def getCanvasInstance():
     return CanvasAPI(config.Canvas.API_BASE_URL,
                      authZToken=config.Canvas.API_AUTHZ_TOKEN)
-
 
 
 def getCourseIDsWithOutcome(canvas, courseIDs, outcome):
@@ -78,31 +93,74 @@ def getCourseIDsWithOutcome(canvas, courseIDs, outcome):
     return matchingCourseIDs
 
 
-def getCourseAssignmentsWithOutcome(canvas, courseIDs, outcome):
-    """Get specific assignments from Canvas courses.  Remove assignments that are expired or aren't marked to match up with ArgGIS group."""
-    matchingCourseAssignments = []
+########  Some simple predicates to check the specific states of assignment.
+
+## Check if the assignment is closed.
+def isExpired(expirationTime):
+    return (expirationTime < RUN_START_TIME)
+
+# Check if this assignment is relevant to arcgis processing.
+## sample: "A" in a   # True check for existence 
+## Maybe as simple as  "outcome in rubric.outcome_id" ???
+def isWrongRubric(assignment,outcome):
+    for rubric in assignment.rubric:
+        if rubric.outcome_id == outcome.id:
+            return True
+    return False
+
+# Check to see if date is recent enough so that should clone to the instructor area.
+# TODO: implement clone logic
+# TODO: temp testing code.  Make sure that at least one is set to clone.
+cloneCount = 0
+
+def shouldCloneStudentAssignment(assignment,expirationTime):
+    # add real logic when we know what it is
+    global cloneCount
+    cloneCount += 1
+    return (cloneCount < 2)
+    #return False
+
+
+def getCourseAssignmentsWithRequiredOutcomeForProcessing(canvas, courseIDs, outcome):
+    """Get relevant assignments and sort into ignore, maintain, or clone for grading."""
+    
+    # list of assignments to check membership and folder creation.
+    maintainAssignments = []
+    # list of assignments to clone for grading.
+    cloneAssignments = []
+    
     for courseID in courseIDs:
+        logger.debug("gCAWROFP: courseID: {}".format(courseID))
         courseAssignments = canvas.getCoursesAssignmentsObjects(courseID)
 
         for assignment in courseAssignments:
+
+            # skip if assignment is not for arcgis.
+            if isWrongRubric(assignment,outcome):
+                logger.debug("gCAWROFP: assignment: {} >>> wrong rubric".format(assignment))
+                continue
+
             expirationTimestamp = assignment.lock_at or assignment.due_at
             expirationTime = dateutil.parser.parse(expirationTimestamp) if expirationTimestamp else RUN_START_TIME
-            if (expirationTime < RUN_START_TIME):
-                logger.info('Skipping Assignment {} for Course {}, expired on: {}'
-                            .format(assignment,
-                                    courseID,
-                                    assignment.lock_at if assignment.lock_at else assignment.due_at))
+            
+            # If recently closed then should clone
+            if shouldCloneStudentAssignment(assignment,expirationTime):
+                logger.debug("gCAWROFP: assignment: {} >>> should clone".format(assignment))
+                cloneAssignments.append(assignment)
                 continue
-            if not assignment.rubric:
-                logger.info('Skipping Assignment {} for Course {}, no rubrics'
-                            .format(assignment,
-                                    courseID))
+            
+            # Nobody cares about this assignment anymore.
+            # This is checked after the clone check can grab the ones it needs.
+            
+            if isExpired(expirationTime):
+                logger.debug("gCAWROFP: assignment: {} >>> expired".format(assignment))
                 continue
-            for rubric in assignment.rubric:
-                if rubric.outcome_id == outcome.id:
-                    matchingCourseAssignments.append(assignment)
-                    break
-    return matchingCourseAssignments
+            
+            # The assignment is relevant, open, and not to be cloned so maintain it.
+            logger.debug("gCAWROFP: assignment: {} >>> process assignment users and folders".format(assignment))
+            maintainAssignments.append(assignment)
+            
+    return maintainAssignments,cloneAssignments
 
 
 # Take two lists and separate out entries only in first list, those only in second list, and those in both.
@@ -133,40 +191,54 @@ def minimizeUserChanges(groupUsers, courseUsers):
     return minGroupUsers, minCourseUsers
 
 
-def updateGroupUsers(arcGIS,courseUserDictionary, course, instructorLog, groupTitle, assignment, group):
-    """Add remove / users from group to match Canvas course"""
+def assureAssignmentFolderForStudent(arcGIS, course, assignment, group,courseData):
+    """Make sure there is an appropriate folder in student space for this assignment."""
     
-    # get the arcgis group members and the canvas course members.
+    ## make sure the course students have a folder for the assignment.
+    logger.info("aAFFS: course: {} assignment: {}".format(course, assignment))
+    student_assignment_folder_name = studentFolderTitle(assignment, courseData)
+    logger.info("aAFFS: student_assignment_folder_name: {}".format(student_assignment_folder_name)) 
+    
+    # Create folders for all the members of the group.
+    # updatedGroupUsers = arcgisUM.getCurrentArcGISMembers(group, groupNameAndID)
+    groupUsers = arcgisUM.getCurrentArcGISMembers(group,util.formatNameAndID(group))
+    createFolderForUsers(arcGIS, groupUsers, student_assignment_folder_name)
+    
+
+def updateGroupUsers(courseUserDictionary, course, instructorLog, groupTitle, group):
+    # get the arcgis group members and synchronize them.
+    
     groupNameAndID = util.formatNameAndID(group)
     groupUsers = arcgisUM.getCurrentArcGISMembers(group, groupNameAndID)
-    logger.debug('group users: {}'.format(groupUsers))
-    ## trim the user names
+    # TODO: move trim to arcgisUM along with format.... ??
+    logger.debug('uGU: group users: {}'.format(groupUsers)) ## trim the user names
     groupUsersTrimmed = [re.sub('_\S+$', '', gu) for gu in groupUsers]
-    logger.debug('All ArcGIS users currently in Group {}: ArcGIS Users: {}'.format(groupNameAndID, groupUsers))
-    canvasCourseUsers = [user.login_id for user in courseUserDictionary[course.id] if user.login_id is not None]
-    logger.debug('All Canvas users in course for Group {}: Canvas Users: {}'.format(groupNameAndID, canvasCourseUsers))
     
-    # compute the exact sets of users to change.
-    changedArcGISGroupUsers, changedCourseUsers = minimizeUserChanges(groupUsersTrimmed, canvasCourseUsers)
-    # added to avoid undefined variable warning
+    logger.debug('uGU: list all ArcGIS users currently in Group {}: ArcGIS Users: {}'.format(groupNameAndID, groupUsers))
+    canvasCourseUsers = [user.login_id for user in courseUserDictionary[course.id] if user.login_id is not None]
+    logger.debug('uGU: All Canvas users in course for Group {}: Canvas Users: {}'.format(groupNameAndID, canvasCourseUsers))
+    
+    # Compute the exact sets of users to change so don't change existing users.
+    changedArcGISGroupUsers, changedCourseUsers = minimizeUserChanges(groupUsersTrimmed, canvasCourseUsers) # added to avoid undefined variable warning
     
     # fix up the user name format for ArcGIS users names
-    changedArcGISGroupUsers = arcgisUM.formatUsersNamesForArcGIS(config.ArcGIS.ORG_NAME,changedArcGISGroupUsers)
-    logger.info('Users to remove from ArcGIS: Group {}: ArcGIS Users: {}'.format(groupNameAndID, changedArcGISGroupUsers))
-    logger.info('Users to add from Canvas course for ArcGIS: Group {}: Canvas Users: {}'.format(groupNameAndID, changedCourseUsers))
+    changedArcGISGroupUsers = arcgisUM.formatUsersNamesForArcGIS(config.ArcGIS.ORG_NAME, changedArcGISGroupUsers)
+    logger.info('uGU: Users to remove from ArcGIS: Group {}: ArcGIS Users: {}'.format(groupNameAndID, changedArcGISGroupUsers))
+    logger.info('uGU: Users to add from Canvas course for ArcGIS: Group {}: Canvas Users: {}'.format(groupNameAndID, changedCourseUsers))
     
     # Now update only the users in the group that have changed.
-    instructorLog, results = arcgisUM.removeSomeExistingGroupMembers(groupTitle, group, instructorLog, changedArcGISGroupUsers)  # @UnusedVariable
-    instructorLog = arcgisUM.addCanvasUsersToGroup(instructorLog, group, arcgisUM.formatUsersNamesForArcGIS(config.ArcGIS.ORG_NAME,changedCourseUsers))
+    instructorLog, results = arcgisUM.removeSomeExistingGroupMembers(groupTitle, group, instructorLog, changedArcGISGroupUsers) # @UnusedVariable
+    instructorLog = arcgisUM.addCanvasUsersToGroup(instructorLog, group, arcgisUM.formatUsersNamesForArcGIS(config.ArcGIS.ORG_NAME, changedCourseUsers))
+    
+    return instructorLog
 
-    ## make sure students have a folder for the assignment.
-    logger.info("uDG: course: {} assignment: {}".format(course,assignment))
-    student_assignment_folder_name = studentFolderTitle(course,assignment)
-    logger.info("uDG: student_assignment_folder_name: {}".format(student_assignment_folder_name))
-    # Create folders for all the members.  Just get the list straight from the group.
-    # That will be the right list with the users in a format known to ArcGIS.
-    updatedGroupUsers = arcgisUM.getCurrentArcGISMembers(group, groupNameAndID)
-    createFolderForUsers(arcGIS,updatedGroupUsers,student_assignment_folder_name)
+#def updateAssignmentGroupAndFolders(arcGIS,courseUserDictionary, course, instructorLog, groupTitle, assignment, group):
+def updateAssignmentGroupAndFolders(arcGIS,courseData, course, instructorLog, groupTitle, assignment, group):
+    """Add remove / users from group to match Canvas course and create assignment folders for the students."""
+    
+    courseUserDictionary = courseData[COURSE_USER_DICTIONARY]
+    instructorLog = updateGroupUsers(courseUserDictionary, course, instructorLog, groupTitle, group)
+    assureAssignmentFolderForStudent(arcGIS, course, assignment, group,courseData)
     
     return instructorLog
 
@@ -174,9 +246,48 @@ def updateGroupUsers(arcGIS,courseUserDictionary, course, instructorLog, groupTi
 # Intent of having a one line method is so that all the title creation formatting is done in methods 
 # close together.  That make it easy to see what the formats are and easy to change them if necessary.
 
-def studentFolderTitle(course,assignment):
-    return'{}{}_{}_{}_{}'.format(config.Application.General.ASGN_FOLDER_PREFIX,course.name,assignment.name,course.id,assignment.id)
 
+#def studentFolderTitle(course,assignment):
+#    return'{}{}_{}_{}_{}'.format(config.Application.General.ASGN_FOLDER_PREFIX,course.name,assignment.name,course.id,assignment.id)
+
+#def crap
+
+def studentFolderTitle(assignment,courseData,prefix=config.Application.General.ASGN_FOLDER_PREFIX):
+    #course_id = assignment.course_id
+    logger.debug("sFT: courseData: {}".format(courseData))
+    courseDictionary = courseData[COURSE_DICTIONARY]
+    logger.debug("sFT: courseDictionary: {}".format(courseDictionary))
+    logger.debug("sFT: assignment: [{}]".format(assignment))
+    logger.debug("sFT: assignment.course_id: [{}]".format(assignment.course_id))
+    course = courseDictionary[assignment.course_id]
+    #  course = courseDictionary[assignment.course_id]
+    logger.debug("sFT: course: {}".format(course))
+    title = '{}{}_{}_{}_{}'.format(prefix,course.name,assignment.name,course.id,assignment.id)
+    logger.info("sFT: title: [{}]".format(title))
+    return title
+    #return'{}{}_{}_{}_{}'.format(prefix,course.name,assignment.name,course.id,assignment.id)
+    
+    #studentSubmissionFolderTitle(assignment,courseData,student,prefix="GRADEME: ")
+    # similar but different prefix and student name
+def studentSubmissionFolderTitle(assignment,courseData,student,prefix='GRADE ME NOW:'):
+    '''Create folder name for graded submission.  Include course_code and student name.'''
+
+    logger.debug("sSFT: courseData: [{}]".format(courseData))
+    courseDictionary = courseData[COURSE_DICTIONARY]
+    
+    course = courseDictionary[assignment.course_id]
+    course_code = course.course_code
+    logger.debug("sFT: course_code: [{}] course: [{}]".format(course_code,course))
+    
+    student_title = studentFolderTitle(assignment,courseData,prefix='')
+    # submission_folder_title includes student data with prefix, course code, and student name
+    submission_folder_title = '{}{}_{}_{}'.format(prefix,course_code,student_title,student)
+    logger.info("sFT: submission_folder_title: [{}]".format(submission_folder_title))    
+    return submission_folder_title
+
+
+#def studentFolderTitle(course,assignment):
+#    return'{}{}_{}_{}_{}'.format(config.Application.General.ASGN_FOLDER_PREFIX,course.name,assignment.name,course.id,assignment.id)
 
 def createFolderForUsers(arcGIS,users,folder_name):
     # create folders for a group of students
@@ -184,15 +295,18 @@ def createFolderForUsers(arcGIS,users,folder_name):
         arcgisUM.createFolderForUser(arcGIS,folder_name,user)
 
 
-def groupdTitle(assignment, course):
+def groupTitleString(assignment, course):
     groupTitle = '%s_%s_%s_%s' % (course.name, course.id, assignment.name, assignment.id)
     return groupTitle
 
 
-def updateArcGISGroupForAssignment(arcGIS, courseUserDictionary, groupTags, assignment, course,instructorLog):
+#def updateArcGISGroupAndStudentFoldersForAssignment(arcGIS, courseUserDictionary, groupTags, assignment, course,instructorLog):
+def updateArcGISGroupAndStudentFoldersForAssignment(arcGIS, courseData, groupTags, assignment, course,instructorLog):
     """" Make sure there is a corresponding ArcGIS group for this Canvas course and assignment.  Sync up the ArcGIS members with the Canvas course members."""
      
-    groupTitle = groupdTitle(assignment, course)
+     # TODO: can get course, assignment, group
+     
+    groupTitle = groupTitleString(assignment, course)
     
     group = arcgisUM.lookForExistingArcGISGroup(arcGIS, groupTitle)
      
@@ -205,26 +319,87 @@ def updateArcGISGroupForAssignment(arcGIS, courseUserDictionary, groupTags, assi
         instructorLog += 'Problem creating or updating ArcGIS group "{}"\n'.format(groupTitle)
     else: 
         # have a group.  Might be new or existing.
-        instructorLog = updateGroupUsers(arcGIS,courseUserDictionary, course, instructorLog, groupTitle, assignment, group)
-        
- 
+        #instructorLog = updateAssignmentGroupAndFolders(arcGIS,courseUserDictionary, course, instructorLog, groupTitle, 
+        instructorLog = updateAssignmentGroupAndFolders(arcGIS,courseData, course, instructorLog, groupTitle, 
+                                                   assignment, group)
+
     courseLogger = getCourseLogger(course.id, course.name)
-    logger.debug("update group instructor log: {}".format(instructorLog))
+    logger.debug("uAGASFFA: update group instructor log: {}".format(instructorLog))
     courseLogger.info(instructorLog)
 
 
 # For all the assignments and their courses update the ArcGIS group.
-def updateArcGISGroupsForAssignments(arcGIS, assignments, courseDictionary,courseUserDictionary):
+#def updateArcGISGroupsForAssignments(arcGIS, assignments, courseDictionary,courseUserDictionary):
+def updateArcGISGroupsForAssignments(arcGIS, assignments, courseData):
     """For each assignment listed ensure there is an ArcGIS group corresponding to the Canvas course / assignment."""
 
     groupTags = ','.join(('kartograafr', 'umich'))
-    logger.debug("groupTags: {}".format(groupTags))
+    courseDictionary = courseData[COURSE_DICTIONARY]
+    logger.debug("uAGGFA: groupTags: {}".format(groupTags))
     for assignment in assignments:
         course = courseDictionary[assignment.course_id]
         instructorLog = ''
-        updateArcGISGroupForAssignment(arcGIS, courseUserDictionary, groupTags, assignment, course,instructorLog)
+        #updateArcGISGroupAndStudentFoldersForAssignment(arcGIS, courseUserDictionary, groupTags, assignment, course,instructorLog)
+        updateArcGISGroupAndStudentFoldersForAssignment(arcGIS, courseData, groupTags, assignment, course,instructorLog)
 
+## assignment has course and assignment canvas ids
+#def cloneTheseAssignments(assignmentsToClone,courseDictionary,courseInstructorDictionary,courseUserDictionary):
+def cloneTheseAssignments(assignmentsToClone,courseData):
+    '''Clone these assignmentsToClone to the instructor content area.'''
+    
+    for a in assignmentsToClone:
+        logger.info("cTA: cloning assignment: [{}]".format(a))
+        
+    # unpack the course data
+    
+    courseDictionary = courseData[COURSE_DICTIONARY]
+    courseUserDictionary = courseData[COURSE_USER_DICTIONARY]
+    courseInstructorDictionary = courseData[COURSE_INSTRUCTOR_DICTIONARY]
+    
+    for c in courseDictionary:
+        logger.info("CTA: course: [{}] content: [{}]".format(c,courseDictionary[c]))
+    for i in courseInstructorDictionary:
+        logger.info("CTA: instructor: [{}] content: [{}]".format(i,courseInstructorDictionary[i]))
+    for u in courseUserDictionary:
+        logger.info("CTA: user: [{}] content: [{}]".format(u,courseUserDictionary[u]))
+    
+    
+    for assignment in assignmentsToClone:
+        course_id = assignment.course_id
+        instructor = courseInstructorDictionary.get(course_id)[0].login_id
+        students = [u.login_id for u in courseUserDictionary.get(course_id)]
+        logger.debug("cTA: students: [{}]".format(students))
+        
+        cloneThisAssignmentForStudents(assignment,instructor,students,courseData)
+    
+def cloneThisAssignment(assignment,instructor,student,courseData):
+    logger.debug("cTA C: assignment: [{}]".format(assignment))
+    logger.debug("cTA C: instructor: [{}] student: [{}]".format(instructor,student))
+    logger.debug("cTA C: courseData: [{}]".format(courseData))
+    
+    source_folder_name = studentFolderTitle(assignment,courseData) 
+    logger.debug("cTA C: source_folder_name: [{}]".format(source_folder_name))
+    
+    sink_folder_name = studentSubmissionFolderTitle(assignment,courseData,student,prefix="GRADEME: ")
+    
+    logger.debug("cTA C: sink_folder_name: [{}]".format(sink_folder_name))
+    logger.error("cTA C: REALLY CALL CLONE")
+    #sink_folder_name = clonedFolderTitle(assignment,instructor)
+    #logger.debug("cTA C: sink_folder_name: {}".format(sink_folder_name))
 
+def cloneThisAssignmentForStudents(assignment,instructor,students,courseData):
+    '''Clone this one assignment to the instructor content area.'''
+    logger.info("CTA B: instructor: [{}]".format(instructor))
+    logger.info("cTA B: cloning assignment: [{}]".format(assignment))
+    logger.info("cTA B: students: [{}]".format(students))
+    #def cloneFolderFromTo(gis,source_folder_name,source_user_name,sink_folder_name,sink_user_name)   
+    for student in students:
+        cloneThisAssignment(assignment,instructor,student,courseData)
+        
+
+    
+
+    
 def getCoursesByID(canvas, courseIDs):
     """Get Canvas course objects for the listed courses."""
     courses = {}
@@ -524,6 +699,8 @@ def main():
     logger.info('{} email to instructors with logs after courses are processed'
                 .format('Sending' if options.sendEmail else 'Not sending'))
 
+    ################ process the classes ###############
+    ## to make separate method need to avoid the embedded 'return'
     canvas = getCanvasInstance()
     arcGIS = arcgisUM.getArcGISConnection(config.ArcGIS.SECURITYINFO)
 
@@ -557,11 +734,9 @@ def main():
                     '"{configCoursePageName}" of course {configCourseID}.'
                     .format(**locals()))
 
-    logger.info('Config -> Course IDs to check for Outcome {}: {}'.format(validOutcome,
-                                                                          list(courseIDs)))
+    logger.info('Config -> Course IDs to check for Outcome {}: {}'.format(validOutcome,list(courseIDs)))
 
-    matchingCourseIDs = getCourseIDsWithOutcome(canvas, courseIDs,
-                                                validOutcome)
+    matchingCourseIDs = getCourseIDsWithOutcome(canvas, courseIDs,validOutcome)
 
     if len(matchingCourseIDs) == 0:
         raise RuntimeError('No Courses linked to Outcome {} were found'.format(validOutcome))
@@ -570,9 +745,16 @@ def main():
                                                                        list(matchingCourseIDs)))
 
     logger.info('Searching specified Courses for Assignments linked to Outcome {}'.format(validOutcome))
-    matchingCourseAssignments = getCourseAssignmentsWithOutcome(
-        canvas, matchingCourseIDs, validOutcome)
+    
+    ## TODO: add processing for clone assignments
+    ## TODO: rename matchingCourseAssignments to maintainAssignments (?)
+    #matchingCourseAssignments = getCourseAssignmentsWithOutcome(canvas, matchingCourseIDs, validOutcome)
+    matchingCourseAssignments,cloneAssignments = getCourseAssignmentsWithRequiredOutcomeForProcessing(canvas, matchingCourseIDs, validOutcome)
+    
+    logger.debug("main: matchingCourseAssignments: {}".format(matchingCourseAssignments))
+    logger.debug("main: cloneAssignments: {}".format(cloneAssignments))
 
+    # TODO: improve test so return only if there are also no clone assignments found. Maybe more complicated if only one has values? 
     if not matchingCourseAssignments:
         logger.info('No valid Assignments linked to Outcome {} were found'.format(validOutcome))
         return
@@ -580,16 +762,36 @@ def main():
     logger.info('Found Assignments linked to Outcome {}: {}'.format(validOutcome,
                                                                     ', '.join(map(str, matchingCourseAssignments))))
 
-    courseDictionary = getCoursesByID(canvas, matchingCourseIDs)
-    courseUserDictionary = getCoursesUsersByID(canvas, matchingCourseIDs)
-    courseInstructorDictionary = getCoursesUsersByID(canvas, matchingCourseIDs, 'teacher')
+    #     courseDictionary = getCoursesByID(canvas, matchingCourseIDs)
+    #     courseUserDictionary = getCoursesUsersByID(canvas, matchingCourseIDs)
+    #     courseInstructorDictionary = getCoursesUsersByID(canvas, matchingCourseIDs, 'teacher')
+    #     courseData = {
+    #         COURSE_DICTIONARY:courseDictionary,
+    #         COURSE_USER_DICTIONARY: courseUserDictionary,
+    #         COURSE_INSTRUCTOR_DICTIONARY: courseInstructorDictionary
+    #         } 
+    
+    # These are kept together since they often are needed together and otherwise need to be passed separately.
+    courseData = {
+        COURSE_DICTIONARY:getCoursesByID(canvas, matchingCourseIDs),
+        COURSE_USER_DICTIONARY: getCoursesUsersByID(canvas, matchingCourseIDs),
+        COURSE_INSTRUCTOR_DICTIONARY: getCoursesUsersByID(canvas, matchingCourseIDs, 'teacher')
+        }
+    
+    #updateArcGISGroupsForAssignments(arcGIS, matchingCourseAssignments, courseDictionary, courseUserDictionary)
+    updateArcGISGroupsForAssignments(arcGIS, matchingCourseAssignments, courseData)
 
-    updateArcGISGroupsForAssignments(arcGIS, matchingCourseAssignments, courseDictionary, courseUserDictionary)
+    #cloneTheseAssignments(cloneAssignments,courseDictionary,courseInstructorDictionary,courseUserDictionary)
+    cloneTheseAssignments(cloneAssignments,courseData)
+
+    ############## end of processing courses
 
     closeAllCourseLoggerHandlers()
 
     if options.sendEmail:
-        emailCourseLogs(courseInstructorDictionary)
+        emailCourseLogs(courseData[COURSE_INSTRUCTOR_DICTIONARY])
+        
+        #emailCourseLogs(courseInstructorDictionary)
 
     renameLogForCourseID(None)
     
