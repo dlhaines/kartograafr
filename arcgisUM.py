@@ -3,9 +3,16 @@
 # by kartograafr as of this writing but are necessary for testing and might 
 # be useful for maintenance.
 
+# TODO: Should CaputerStdoutLines be used in more places?
+# This sometimes uses a CaptureStdoutLines context manager when calling the 
+# SDK since the SDK may write messages to stdout rather than returning them.
+
 import datetime
 import logging
 import re
+
+import sys
+from io import StringIO
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +42,10 @@ options = None
 courseLogHandlers = dict()
 courseLoggers = dict()
 
+
+# Special exception, mostly used when have captured an error from the SDK.
+class ArcgisUMException(RuntimeWarning):
+    '''Unexpected result from call to ArcGIS.'''
 
 def getArcGISConnection(securityinfo):
     """
@@ -90,6 +101,7 @@ def getArcGISGroupByTitle(arcGISAdmin, title):
 
     return None
 
+
 def addCanvasUsersToGroup(instructorLog, group, courseUsers):
     """Add new users to the ArcGIS group.  """
     groupNameAndID = util.formatNameAndID(group)
@@ -100,8 +112,8 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
 
     logger.info('Adding Canvas Users to ArcGIS Group {}: {}'.format(groupNameAndID, courseUsers))
 
+    # TODO: simplify
     arcGISFormatUsers = courseUsers
-    logger.debug("addCanvasUsersToGroup: formatted: {}".format(arcGISFormatUsers))
     
     results = group.add_users(arcGISFormatUsers)
     logger.debug("adding: results: {}".format(results))
@@ -111,14 +123,13 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
     usersCount = len(arcGISFormatUsers)
     usersCount -= len(usersNotAdded) if usersNotAdded else 0
     logger.debug("aCUTG: usersCount: {}".format(usersCount))
-    logger.debug("aCUTG: instructorLog 1: [{}]".format(instructorLog))
+    
     instructorLog += 'Number of users added to group: [{}]\n\n'.format(usersCount)
-    logger.debug("aCUTG: instructorLog 2: [{}]".format(instructorLog))
+
     if usersNotAdded:
         logger.warning('Warning: Some or all users not added to ArcGIS group {}: {}'.format(groupNameAndID, usersNotAdded))
         instructorLog += 'Users not in group (these users need ArcGIS accounts created for them):\n' + '\n'.join(['* ' + userNotAdded for userNotAdded in usersNotAdded]) + '\n\n' + 'ArcGIS group ID number:\n{}\n\n'.format(group.id)
     instructorLog += '- - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\n'
-    logger.debug("aCUTG: instructorLog 3: [{}]".format(instructorLog))
 
     logger.info("addCanvasUsersToGroup: instructorLog: [{}]".format(instructorLog))
     
@@ -128,28 +139,35 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
 def createFolderForUser(arcGIS,folder_name,explicit_owner):
     '''create a named folder for a named user'''
 
-    # TODO: handle "Folder already exists." output
     logger.info("For user [{}] create folder [{}] .".format(explicit_owner,folder_name))
     
-    try:
-        folder_return = arcGIS.content.create_folder(folder=folder_name,owner=explicit_owner)
-    except  RuntimeError as rte:
-        logger.error("Exception: {} creating folder {} for user {}".format(rte,folder_name,explicit_owner))
-        return None
+    with CaptureStdoutLines() as output:
+        try:
+            folder_return = arcGIS.content.create_folder(folder=folder_name,owner=explicit_owner)
+        except  RuntimeError as rte:
+            logger.error("Exception: {} creating folder {} for user {}".format(rte,folder_name,explicit_owner))
+            return None
+    
+    # If there is an error log it and return None
+    if output:
+        logger.info("create folder for user: error output: {}".format(output))
+        raise ArcgisUMException("{}: user: [{}] folder_name: [{}]".format(output,explicit_owner,folder_name))
 
     return folder_return
 
-def getCurrentArcGISMembers(group, groupNameAndID):
+
+def getCurrentArcGISMembers(group):
     groupAllMembers = {}
 
     try:
         groupAllMembers = group.get_members()
     except RuntimeError as exception:
-        logger.error('Exception while getting users for ArcGIS group "{}": {}'.format(groupNameAndID, exception))
+        logger.error('Exception while getting users for ArcGIS group "{}": {}'.format(group, exception))
             
     groupUsers = groupAllMembers.get('users')
     """:type groupUsers: list"""
     return groupUsers
+
 
 def removeListOfUsersFromArcGISGroup(group, groupNameAndID, groupUsers):
     """Remove only listed users from ArcGIS group."""
@@ -160,6 +178,7 @@ def removeListOfUsersFromArcGISGroup(group, groupNameAndID, groupUsers):
 
     logger.info('ArcGIS Users to be removed from ArcGIS Group [{}] [{}]'.format(groupNameAndID, ','.join(groupUsers)))
     results = None
+    
     try:
             results = group.removeUsersFromGroup(','.join(groupUsers))
     except RuntimeError as exception:
@@ -203,89 +222,94 @@ def createNewArcGISGroup(arcGIS, groupTags, groupTitle,instructorLog):
     return group, instructorLog
 
 
-# Get ArcGIS group with this title (if it exists)
-def lookForExistingArcGISGroup(arcGIS, groupTitle):
-    """Find an ArgGIS group with a matching title."""
-    logger.info('Searching for existing ArcGIS group "{}"'.format(groupTitle))
-    try:
-            group = getArcGISGroupByTitle(arcGIS, groupTitle)
-    except RuntimeError as exception:
-            logger.exception('Exception while searching for ArcGIS group "{}": {}'.format(groupTitle, exception))
-            
-    return group
-
-
+# TODO: Have consistent methods for all the formatting of the user lists. 
 def formatUsersNamesForArcGIS(suffix,userList):
     """Convert list of Canvas user name to the format used in ArcGIS."""
     userList = [user + '_' + suffix for user in userList]
     return userList
 
 
-# get list of folders for a specific user.
 def getFoldersForUser(gis,user_name):
     '''get list of folders owned by this user'''
-    logger.debug("gFFU: gis: {} user_name: [{}]".format(gis,user_name))
     user = gis.users.get(user_name)
     folders = user.folders
     logger.debug("gFFU: {}".format(folders))
+    
     return folders
 
 
-# def getItemsInFolderForUser(gis,folder_name,user_name):
-#     print("gis: {} user_name: [{}] folder_name: [{}]".format(gis,user_name,folder_name))
-#     user = gis.users.get(user_name)
-#     print('giiffu: user: {}'.format(user))
-#     folderItems = user.items(folder=folder_name)
-#     return folderItems
-
-def doesFolderMatchTitleAndIsEmpty(user,folder,folder_match):
-    '''Test if folder is empty and string matches the title as a prefix.'''
-    logger.debug("dFMFAIE: user: [{}] folder: [{}] folder_match: [{}]".format(user,folder,folder_match))
+##### Predicates for filtering.
+def doesFolderMatchTitle(folder,search_string):
+    '''Test if folder is empty and regex matches the title.'''
+    logger.debug("dFMT: folder: [{}] folder_match: [{}]".format(folder,search_string))
     
-    if not folder_match.search(folder.get('title')):
+    return re.search(search_string,folder.get('title'))
+    
+
+def doesFolderMatchTitleAndIsEmpty(user,folder,search_string):
+    '''Test if folder is empty and string matches the title as a prefix.'''
+    logger.debug("dFMTAIE: user: [{}] folder: [{}] search_string: [{}]".format(user,folder,search_string))
+                          
+    if not doesFolderMatchTitle(folder,search_string):
+        logger.debug("dFMFAIE: folder title does NOT match.") 
         return False
-                             
+    
+    logger.info("dFMTAIE: folder title matches.")   
+    
     # If there are some items return false
     folderItems = user.items(folder=folder)
-    logger.info("dFMTAIE: folder: [{}]folderItems: [{}]".format(folder,folderItems))
+    logger.debug("dFMTAIE: folderItems: [{}]".format(folderItems))
     
-    if len(folderItems) > 0:
-        return False
-    
-    return True
+    return len(folderItems) == 0
 
 
-def doesFolderMatchTitle(user,folder,folder_match):
-    '''Test if folder is empty and string matches the title as a prefix.'''
-    logger.debug("dFMFAIE: user: [{}] folder: [{}] folder_match: [{}]".format(user,folder,folder_match))
+# TODO: this could be much more pythonic
+def deleteMatchingEmptyFoldersForUser(gis, user_name, search_string):
+    '''Check user's folder's titles against regular expression (as string) and delete if match and are empty.'''
+    logger.debug("dMEFFUF: gis: {} user_name: [{}] match_string: [{}]".format(gis, user_name, search_string))
     
-    if not folder_match.search(folder.get('title')):
-        return False
-    
-    return True
+    matching_folders = listMatchingEmptyFoldersForUser(gis, user_name, search_string)
 
+    logger.info("matching empty folders to delete for user: [{}] folders: [{}]".format(user_name, matching_folders))
 
+    for f in matching_folders:
+        logger.info("deleting folder: [{}] for user: [{}]".format(f.get('title'), user_name))
+        gis.content.delete_folder(f.get('title'), owner=user_name)
+               
+        
 # It would be straightforward to extend this to pass in a predicate for matching.
-def deleteMatchingFoldersForUser(gis,user_name,match_string):
-    '''Check user's folders against string and delete if match prefix of title and folder is empty.'''
-    logger.debug("dMFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis,user_name,match_string))
-    
-    # assemble the values that won't change.
-    folder_match = re.compile(match_string)
+def listMatchingNonEmptyFoldersForUser(gis, user_name, search_string):
+    '''Check user's folder's titles against regular expression (as string) and list if match and have contents.'''
+    logger.debug("lMNEFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis, user_name, search_string))
+
     user = gis.users.get(user_name)
     folders = user.folders
-    logger.debug("dMFFU: all folders {}".format(folders))
- 
-    matching_folders = [f for f in folders if doesFolderMatchTitleAndIsEmpty(user,f,folder_match)]
-    
-    logger.info("deleting matching folders for user: {} folders: {}".format(user_name,matching_folders))
-    
-    for f in matching_folders:
-        logger.info("deleting folder: [{}] for user: [{}]".format(f.get('title'),user_name))
-        gis.content.delete_folder(f.get('title'), owner=user_name)
+    logger.debug("lMNEFFU: all folders {}".format(folders))
+
+    matching_folders = [f for f in folders if not doesFolderMatchTitleAndIsEmpty(user, f, search_string)]
+
+    logger.info("list matching non-empty folders for user: {} folders: {}".format(user_name, matching_folders))
+
+    return matching_folders
+
+
+def listMatchingEmptyFoldersForUser(gis, user_name, search_string):
+    '''Check user's folder's titles against regular expression (as string) and list if match and are empty.'''
+    logger.debug("lMEFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis, user_name, search_string))
+
+    user = gis.users.get(user_name)
+    folders = user.folders
+    logger.debug("lMEFFU: all folders {}".format(folders))
+
+    matching_folders = [f for f in folders if doesFolderMatchTitleAndIsEmpty(user, f, search_string)]
+
+    logger.info("list matching folders for user: {} folders: {}".format(user_name, matching_folders))
+
+    return matching_folders
+
 
 def listMatchingFoldersForUser(gis,user_name,match_string):
-    '''Find user's matching folders.'''
+    '''Find user's matching folders. Match string must be string version of regular expression.'''
     logger.debug("lMFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis,user_name,match_string))
     
     # assemble the values that won't change.
@@ -294,57 +318,70 @@ def listMatchingFoldersForUser(gis,user_name,match_string):
     folders = user.folders
     logger.debug("lMFFU: all folders {}".format(folders))
  
-    matching_folders = [f for f in folders if doesFolderMatchTitle(user,f,folder_match)]
+    matching_folders = [f for f in folders if doesFolderMatchTitle(f,folder_match)]
     
     logger.info("list matching folders for user: {} folders: {}".format(user_name,matching_folders))
+    return matching_folders
+    
     
 def getItemsInFolderForUser(gis,folder_name,user_name):
     logger.debug("gIIFFU: gis: {} user_name: [{}] folder_name: [{}]".format(gis,user_name,folder_name))
     user = gis.users.get(user_name)
     logger.debug('gIIFFU: user: {}'.format(user))
+    
+    # TODO: wrap for errors
     folderItems = user.items(folder=folder_name)
     return folderItems
     
-def createFolder(gis,folder_name,use_owner):
-    folder_return = gis.content.create_folder(folder=folder_name,owner=use_owner)
-    return folder_return
-    
+# TODO: deal with error return
 def cloneFolderFromTo(gis,source_folder_name,source_user_name,sink_folder_name,sink_user_name):
     '''clone the items in the source folder to the sink folder and make sink user the owner.'''
     logger.debug("cFFT: gis: {} source_folder_name: [{}] source_user_name: [{}] sink_folder_name: [{}] sink_user_name: [{}]"
           .format(gis,source_folder_name,source_user_name,sink_folder_name,sink_user_name))
-    new_folder = createFolder(gis,sink_folder_name,sink_user_name)
+    
+    try:
+        new_folder = createFolderForUser(gis,sink_folder_name,sink_user_name)
+    except ArcgisUMException as excp:
+        logger.error("Error creating folder: {}".format(str(excp)))
+        if re.match(re.escape('[\'Folder already exists.\']'),str(excp)):
+            logger.debug("cFFT: caught error creating folder")
+        return None
+        
     logger.debug("cFFT: new_folder: {}".format(new_folder))
 
     source_items = getItemsInFolderForUser(gis,source_folder_name,source_user_name)
     logger.debug("cFFT: source_items: {}".format(source_items))
     
-    logger.error("cFFT: skip actual clone for a bit")
-    #cloned = gis.content.clone_items(source_items,new_folder['title'],copy_data=True)
-    #print("cFFT: cloned: [{}]".format(cloned))
+    logger.debug("cFFT: new_folder: [{}]".format(new_folder))
+    cloned = gis.content.clone_items(source_items,folder=new_folder['title'],copy_data=True)
+    logger.debug("cFFT: cloned: [{}]".format(cloned))
     
     return new_folder
-    
-    
-#     for f in matching_folders:
-#         logger.info("deleting folder: [{}] for user: [{}]".format(f.get('title'),user_name))
 
+class CaptureStdoutLines(list):
+    """
+    A context manager for capturing the lines sent to stdout as elements
+    of a list.  Useful for capturing important output printed by
+    poorly-designed API methods.
 
-# def deleteMatchingFoldersForUser(gis,user_name,match_string):
-#     '''Check user's folders against string and delete if match.'''
-#     logger.debug("dMFFU: gis: {} user_name: [{}] match_string: [{}]".format(gis,user_name,match_string))
-#     folder_match = re.compile(match_string)
-#     user = gis.users.get(user_name)
-#     folders = user.folders
-#     logger.debug("dMFFU: all folders {}".format(folders))
-#  
-#     matching_folders = [x for x in folders if folder_match.search(x.get('title'))]
-#     logger.info("deleting matching folders for user: {} folders: {}".format(user_name,matching_folders))
-#     
-#     for f in matching_folders:
-#         logger.info("deleting folder: [{}] for user: [{}]".format(f.get('title'),user_name))
-#         gis.content.delete_folder(f.get('title'), owner=user_name)
-#         
-#     # Returns nothing.  Assume errors are obvious.
+    Example::
+        with CaptureStdoutLines() as output:
+            print('Norwegian blue parrot')
+        assert output == ['Norwegian blue parrot']
+
+        with CaptureStdoutLines(output) as output:
+            print('Venezuelan beaver cheese')
+        assert output == ['Norwegian blue parrot', 'Venezuelan beaver cheese']
+    """
+
+    def __enter__(self):
+        self._originalStdout = sys.stdout
+        sys.stdout = self._stdoutStream = StringIO()
+        return self
+
+    def __exit__(self, *args):
+        self.extend(self._stdoutStream.getvalue().splitlines())
+        sys.stdout = self._originalStdout
+
 
 ### end 
