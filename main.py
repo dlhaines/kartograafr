@@ -234,7 +234,7 @@ def updateGroupUsers(courseUserDictionary, course, instructorLog, groupTitle, gr
     
     # Now update only the users in the group that have changed.
     instructorLog, results = arcgisUM.removeSomeExistingGroupMembers(groupTitle, group, instructorLog, changedArcGISGroupUsers) # @UnusedVariable
-    instructorLog = arcgisUM.addCanvasUsersToGroup(instructorLog, group, arcgisUM.formatUsersNamesForArcGIS(config.ArcGIS.ORG_NAME, changedCourseUsers))
+    instructorLog = arcgisUM.addUsersToGroup(instructorLog, group, arcgisUM.formatUsersNamesForArcGIS(config.ArcGIS.ORG_NAME, changedCourseUsers))
     
     return instructorLog
 

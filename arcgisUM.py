@@ -102,7 +102,7 @@ def getArcGISGroupByTitle(arcGISAdmin, title):
     return None
 
 
-def addCanvasUsersToGroup(instructorLog, group, courseUsers):
+def addUsersToGroup(instructorLog, group, courseUsers):
     """Add new users to the ArcGIS group.  """
     groupNameAndID = util.formatNameAndID(group)
     
@@ -110,7 +110,7 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
         logger.info('No new users to add to ArcGIS Group {}'.format(groupNameAndID))
         return instructorLog
 
-    logger.info('Adding Canvas Users to ArcGIS Group {}: {}'.format(groupNameAndID, courseUsers))
+    logger.info('Adding Users to ArcGIS Group: {}: users: {}'.format(groupNameAndID, courseUsers))
 
     # TODO: simplify
     arcGISFormatUsers = courseUsers
@@ -131,7 +131,7 @@ def addCanvasUsersToGroup(instructorLog, group, courseUsers):
         instructorLog += 'Users not in group (these users need ArcGIS accounts created for them):\n' + '\n'.join(['* ' + userNotAdded for userNotAdded in usersNotAdded]) + '\n\n' + 'ArcGIS group ID number:\n{}\n\n'.format(group.id)
     instructorLog += '- - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\n'
 
-    logger.info("addCanvasUsersToGroup: instructorLog: [{}]".format(instructorLog))
+    logger.info("addUsersToGroup: instructorLog: [{}]".format(instructorLog))
     
     return instructorLog
 
@@ -224,7 +224,7 @@ def createNewArcGISGroup(arcGIS, groupTags, groupTitle,instructorLog):
 
 # TODO: Have consistent methods for all the formatting of the user lists. 
 def formatUsersNamesForArcGIS(suffix,userList):
-    """Convert list of Canvas user name to the format used in ArcGIS."""
+    """Convert list of user names to the format used in ArcGIS."""
     userList = [user + '_' + suffix for user in userList]
     return userList
 
