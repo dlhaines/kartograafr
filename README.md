@@ -129,7 +129,8 @@ Also install any required packages by running:
 pip install -r requirements.text
 ```
 
-Note that this python environment must be used in testing or running kartograafr.
+Note that this python environment must be used in testing or running
+kartograafr.
 
 ### Testing Locally
 
@@ -216,6 +217,10 @@ OpenShift.  There will be configuration changes.  OpenShift
 configuration is beyond the scope of this readme.  The *runDocker.sh*
 script is a model for what OpenShift needs to be configured to supply.
 
+## Jupyter Notebook
+The files *arcgisUM.py* and *util.py* can be pulled into Jupyter
+Notebook and used to test, and perhaps use, the functionality.
+
 ------
 
 ###  Secure Information
@@ -238,3 +243,27 @@ is configured.
 The template file illustrates how to easily implement an environmental variable
 override of the property value.  The code given is very likely not the
 best way to do this and is likely to be improved soon.
+
+### PyCharm
+To run under PyCharm create a new run configuration to 
+a) use the required conda environment
+b) explicitly incude the secrets directory in the PYTHONPATH environment variable.
+c) run the *main.py* source file.
+
+### Clone for grading requirements
+1) The assignment should be closed (have cheat setting for expr date).
+2) The assignment folder must exist for the student.
+3) The folder has something in it.
+4) The submission / grading folder should not have anything it in.
+
+So students that did nothing won't have a submitted folder.  Students that
+have something in the folder won't get it updated.
+
+pros/cons:
+* won't see anything from students with nothing to submit
+* if somebody has nothing at due time but then puts something in 
+it will show up.  OK?
+* if delete submission folder then can resubmit
+
+how about skip_empty_submissions switch (default to false) so true gives
+chance to run, then add to assignment, then run and get submission

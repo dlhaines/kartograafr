@@ -8,7 +8,7 @@
 
 # Need to build in anaconda environment
 FROM continuumio/anaconda3
-
+o
 RUN apt-get update && apt-get install -y cron vim
 
 ######### set timezone
@@ -17,10 +17,14 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 #########
 
 # Create a new conda environment and then install arcgis python sdk in that environment.
+should update and should make sure that arcgis is 1.4.1
 RUN conda create --name py35 python=3.5
 RUN /bin/bash -c "source activate py35 && conda install -c esri arcgis -y"
 
 WORKDIR /usr/src/app
+
+RUN pwd
+RUN ls -la .
 
 COPY requirements.txt ./
 # Do the pip install in chosen conda environment

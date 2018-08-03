@@ -23,8 +23,17 @@ class Application(object):
     
     # Other settings.
     class General(object):
-        # include any required whitespace.
+        # Prefixes to be used in assignment folders.
         ASGN_FOLDER_PREFIX = 'ASGN: '
+        # Submission is copy provided to the instructor.
+        SUBMISSION_FOLDER_PREFIX = 'GRADEME: '
+        # True means to not create a clone folder if there are no items to be cloned.
+        SKIP_EMPTY_CLONE=True
+        # False means not to copy anything into a folder if there already is something in it.
+        ALLOW_MULTIPLE_CLONES=False
+        # Remove any item with non-ascii name.  As of 2018/04 clone will fail when constructing url.
+        #FILTER_NON_ASCII_TITLE=True
+        FILTER_NON_ASCII_TITLE = False
         
 class Canvas(object):
     API_BASE_URL = 'https://umich.instructure.com/api/v1/'
@@ -32,7 +41,9 @@ class Canvas(object):
     API_AUTHZ_TOKEN = 'NEVEReverWILLyouKNOWmyNAME'
 
     ACCOUNT_ID = 306  # Test Account
-    TARGET_OUTCOME_ID = 2501  # ArcGIS Mapping Skills
+    #TARGET_OUTCOME_ID = 2501  # ArcGIS Mapping Skills
+    #TARGET_OUTCOME_ID = 4353  # ArcGIS Mapping Skills
+    TARGET_OUTCOME_ID = 4941 # Kart test outcome
     CONFIG_COURSE_ID = 138596
     CONFIG_COURSE_PAGE_NAME = 'course-ids'
     COURSE_ID_SET = set(( # Used iff IDs are not found in the configuration course page defined above

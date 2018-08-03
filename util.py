@@ -17,6 +17,10 @@ class UtilMixin(object):
     def methodName(self):
         logger.debug("call methodName")
 
+def step(msg):
+    """Print message as processing step."""
+    logger.warning("******* STEP: {}".format(msg))
+
 def stringContainsAllCharacters(string, characters):
     """
     Check whether 'string' contains all characters from iterable 'characters'.
@@ -32,6 +36,13 @@ def stringContainsAllCharacters(string, characters):
     assert iter(characters)
     return False not in [character in string for character in characters]
 
+def isAscii(s):
+    """True if string can be encoded as ascii, false if it can not be."""
+    try:
+        s.encode('ascii')
+        return True
+    except UnicodeEncodeError:
+        return False
 
 def formatNameAndID(objectA):
      return '"{}" ({})'.format(objectA.title, objectA.id)
